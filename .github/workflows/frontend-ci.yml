@@ -1,0 +1,153 @@
+name: frontend-ci
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "frontend/**"
+      - ".github/workflows/frontend-ci.yml"
+  workflow_dispatch:
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: us-east-1
+  CLUSTER_NAME: platform-eks
+  APP_NAME: mandrade2
+  DOMAIN: timedevops.click
+  BUCKET_NAME: idp-mandrade2-static
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::948881762705:role/github-actions-ecr-push
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Install kubectl
+        uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.31.0'
+
+      - name: Configure kubectl for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ env.CLUSTER_NAME }} --region ${{ env.AWS_REGION }}
+
+      - name: Resolve CloudFront distribution ID from StaticWebsite claim
+        id: resolve-dist
+        run: |
+          # Try claim status first (fast path), then fallback by CloudFront alias.
+          DIST_ID=$(kubectl --request-timeout=5s get staticwebsite ${{ env.APP_NAME }}-web -n ${{ env.APP_NAME }} -o jsonpath='{.status.distributionId}' 2>/dev/null || echo "")
+          
+          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
+            echo "Could not resolve CloudFront distribution ID from StaticWebsite claim"
+            echo "Attempting fallback: query CloudFront by alias"
+            
+            DIST_ID=$(aws cloudfront list-distributions --query "DistributionList.Items[?contains(Aliases.Items, '${{ env.APP_NAME }}.timedevops.click')].Id | [0]" --output text 2>/dev/null || echo "")
+          fi
+          
+          if [ -z "$DIST_ID" ] || [ "$DIST_ID" = "None" ]; then
+            echo "CloudFront distribution not found yet; proceeding with S3 deploy without invalidation."
+            DIST_ID=""
+          else
+            echo "Resolved CloudFront distribution ID: $DIST_ID"
+          fi
+
+          echo "dist-id=$DIST_ID" >> $GITHUB_OUTPUT
+
+      - name: Wait for S3 bucket (Crossplane provisioning)
+        id: wait-bucket
+        run: |
+          BUCKET_NAME="${{ env.BUCKET_NAME }}"
+          MAX_ATTEMPTS=45  # 45 attempts * 20s = 15 minutes max wait
+          ATTEMPT=0
+          
+          echo "⏳ Waiting for S3 bucket: $BUCKET_NAME"
+          echo "📦 This bucket is created by Crossplane via StaticWebsite claim"
+          echo "🔄 ArgoCD → Crossplane → AWS S3"
+          echo "⏰ First-time provisioning can take 5-15 minutes..."
+          echo ""
+          
+          while [ $ATTEMPT -lt $MAX_ATTEMPTS ]; do
+            if aws s3api head-bucket --bucket "$BUCKET_NAME" 2>/dev/null; then
+              echo ""
+              echo "✅ Bucket is ready: $BUCKET_NAME"
+              echo "bucket-exists=true" >> $GITHUB_OUTPUT
+              exit 0
+            fi
+            
+            ATTEMPT=$((ATTEMPT + 1))
+            ELAPSED=$((ATTEMPT * 20))
+            echo "⏳ Attempt $ATTEMPT/$MAX_ATTEMPTS (${ELAPSED}s elapsed): Bucket not ready yet, waiting 20s..."
+            sleep 20
+          done
+          
+          echo ""
+          echo "❌ Timeout: Bucket not created after $((MAX_ATTEMPTS * 20)) seconds (15 minutes)"
+          echo ""
+          echo "🔍 Troubleshooting steps:"
+          echo "1. Check StaticWebsite claim status:"
+          echo "   kubectl get staticwebsite ${{ env.APP_NAME }}-web -n ${{ env.APP_NAME }}"
+          echo ""
+          echo "2. Check Crossplane provider logs:"
+          echo "   kubectl logs -n crossplane-system -l pkg.crossplane.io/provider=provider-aws-s3"
+          echo ""
+          echo "3. Check ArgoCD application sync:"
+          echo "   kubectl get application -n argocd | grep ${{ env.APP_NAME }}"
+          echo ""
+          echo "4. Re-run this workflow after Crossplane completes provisioning"
+          
+          echo "bucket-exists=false" >> $GITHUB_OUTPUT
+          exit 1
+
+      - name: Deploy static files to S3
+        if: steps.wait-bucket.outputs.bucket-exists == 'true'
+        run: |
+          aws s3 sync frontend/ "s3://${{ env.BUCKET_NAME }}/" --delete
+
+      - name: Invalidate CloudFront cache
+        if: true
+        run: |
+          aws cloudfront create-invalidation \
+            --distribution-id "${{ steps.resolve-dist.outputs.dist-id }}" \
+            --paths "/*"
+
+      - name: Deployment summary
+        if: steps.wait-bucket.outputs.bucket-exists == 'true'
+        run: |
+          echo "✅ Frontend deployed successfully"
+          echo "📦 Bucket: ${{ env.BUCKET_NAME }}"
+          if [ -n "${{ steps.resolve-dist.outputs.dist-id }}" ]; then
+            echo "🌐 Distribution: ${{ steps.resolve-dist.outputs.dist-id }}"
+            echo "♻️  CloudFront invalidation: executed"
+            echo "🔗 URL: https://mandrade2.timedevops.click"
+          else
+            echo "🌐 Distribution: pending provisioning by Crossplane"
+            echo "♻️  CloudFront invalidation: skipped (will run on next push)"
+            echo "⏰ Distribution provisioning takes 10-15 minutes"
+            echo "📝 Check ArgoCD for StaticWebsite claim status"
+          fi
+      
+      - name: First-time setup notice
+        if: steps.wait-bucket.outputs.bucket-exists == 'false'
+        run: |
+          echo "⚠️  FIRST-TIME SETUP REQUIRED"
+          echo ""
+          echo "The S3 bucket is being created by Crossplane via StaticWebsite claim."
+          echo "This is normal for the first deployment and takes 5-10 minutes."
+          echo ""
+          echo "📋 Next steps:"
+          echo "1. Wait for Crossplane to provision the bucket (check ArgoCD)"
+          echo "2. Re-run this workflow manually after bucket is ready"
+          echo "3. Or push a new commit to frontend/ to trigger automatic deployment"
+          echo ""
+          echo "🔍 Check status:"
+          echo "   kubectl get staticwebsite mandrade2-web -n mandrade2"
