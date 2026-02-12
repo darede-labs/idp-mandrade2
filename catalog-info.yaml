@@ -1,0 +1,11 @@
+apiVersion: backstage.io/v1alpha1
+kind: Component
+metadata:
+  name: idp-mandrade2
+  description: mandrade2
+  annotations:
+    github.com/project-slug: darede-labs/idp-mandrade2
+spec:
+  type: service
+  lifecycle: experimental
+  owner: group:default/mandrade
