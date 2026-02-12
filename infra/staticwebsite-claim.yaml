@@ -1,0 +1,12 @@
+apiVersion: platform.darede.io/v1alpha1
+kind: StaticWebsite
+metadata:
+  name: mandrade2-web
+  namespace: mandrade2
+spec:
+  siteName: mandrade2
+  region: us-east-1
+  indexDocument: index.html
+  errorDocument: index.html
+  priceClass: PriceClass_100
+  apiGatewayCustomDomain: api-mandrade2.timedevops.click
