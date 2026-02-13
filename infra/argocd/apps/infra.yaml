@@ -12,7 +12,7 @@ spec:
     targetRevision: main
     path: infra
     directory:
-      include: '{namespace.yaml,resource-quota.yaml,aurora-master-password-secret.yaml,aurora-claim.yaml,httpapi-claim.yaml,staticwebsite-claim.yaml,db-externalsecret.yaml}'
+      include: '{namespace.yaml,resource-quota.yaml,aurora-master-password-secret.yaml,aurora-claim.yaml,httpapi-claim.yaml,staticwebsite-claim.yaml,db-secretstore.yaml,db-externalsecret.yaml}'
   destination:
     server: https://kubernetes.default.svc
     namespace: mandrade2
