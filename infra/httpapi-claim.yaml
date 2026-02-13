@@ -19,9 +19,9 @@ spec:
   # VPC Link Configuration (auto-populated from platform-params ConfigMap)
   # Private subnet IDs for VPC Link ENIs (must be in different AZs)
   vpcLinkSubnetIds:
-    - "{{ subnetId }}"
-    - "{{ subnetId }}"
-    - "{{ subnetId }}"
+    - "subnet-0e482760d4e4f0250"
+    - "subnet-001f264a2c946e35c"
+    - "subnet-05916f1c5cb54a6a8"
   
   # Security group for VPC Link ENIs (using EKS node security group)
   # This allows VPC Link to communicate with backend pods in the cluster
